@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Waiter Panel</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  .toolbar{display:flex;align-items:center;gap:8px;padding:14px 20px 0;max-width:1200px;margin:0 auto;flex-wrap:wrap}
+  .tabs{display:flex;gap:8px;flex:1;flex-wrap:wrap}
+  .tabs button{border:1px solid var(--line);background:#fff;border-radius:99px;padding:8px 16px;font-weight:600}
+  .tabs button.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .tabs .count{display:inline-block;min-width:22px;padding:0 6px;margin-left:6px;border-radius:99px;background:var(--brand);color:#fff;font-size:12px;text-align:center}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px;padding:16px 20px 40px;max-width:1200px;margin:0 auto}
+  .order{padding:16px;display:flex;flex-direction:column;gap:10px;border-left:5px solid var(--line)}
+  .order.new{border-left-color:var(--brand);animation:pulse 1.6s ease 3}
+  .order.processing{border-left-color:var(--amber)}
+  .order.delivered{border-left-color:var(--green);opacity:.85}
+  .order.cancelled{opacity:.6}
+  @keyframes pulse{0%,100%{box-shadow:var(--shadow)}50%{box-shadow:0 0 0 6px var(--brand-soft)}}
+  .order .head{display:flex;justify-content:space-between;align-items:center}
+  .order .tbl{font-size:22px;font-weight:800}
+  .order ul{margin:0;padding:0;list-style:none}
+  .order li{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px dashed var(--line)}
+  .order li b{color:var(--brand);margin-right:6px}
+  .note{background:var(--amber-soft);border-radius:8px;padding:8px 10px;font-size:14px}
+  .src{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:99px;background:var(--blue-soft);color:var(--blue)}
+  .order .acts{display:flex;gap:8px}
+  .order .acts .btn{flex:1}
+  .calls{max-width:1200px;margin:12px auto 0;padding:0 20px;display:flex;flex-direction:column;gap:8px}
+  .callbox{background:var(--blue-soft);border:1px solid #c6daf2;color:var(--blue);border-radius:12px;padding:12px 16px;display:flex;align-items:center;gap:12px;font-weight:600}
+  .callbox span{flex:1}
+  .empty{text-align:center;color:var(--muted);padding:60px 20px;grid-column:1/-1}
+  .live{display:inline-flex;align-items:center;gap:6px;font-size:13px;opacity:.85}
+  .live i{width:9px;height:9px;border-radius:50%;background:#e74c3c}
+  .live.on i{background:#2ecc71}
+  .search{position:relative}
+  .search input{padding-left:36px}
+  .search::before{content:"🔍";position:absolute;left:11px;top:50%;transform:translateY(-50%);font-size:14px;opacity:.6}
+  .picklist{max-height:280px;overflow:auto;border:1px solid var(--line);border-radius:10px;margin:8px 0 14px}
+  .pick{display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--line)}
+  .pick:last-child{border-bottom:0}
+  .pick .nm{flex:1}
+  .pick.off .nm{opacity:.55}
+  .pick .qty{display:flex;align-items:center;gap:6px}
+  .pick .qty button{width:30px;height:30px;border-radius:8px;border:0;background:var(--brand-soft);color:var(--brand);font-weight:800;font-size:17px}
+  .pick .qty .n{min-width:18px;text-align:center;font-weight:700}
+  .sumbox{background:#fcf6f0;border-radius:10px;padding:10px 12px;margin-bottom:14px;font-size:14px}
+  @media (max-width:600px){ .topbar .who{display:none} .topbar{padding:10px 12px;gap:8px} }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script src="config.js"></script>
+<script src="firebase-app-compat.js"></script>
+<script src="firebase-auth-compat.js"></script>
+<script src="firebase-database-compat.js"></script>
+<script src="common.js"></script>
+<script>
+let me = null, orders = [], tab = 'new', calls = [], settings = {}, firstLoad = true, ordersRef = null;
+
+(async () => {
+  if (!CONFIGURED) return showSetupNeeded($('#app'));
+  try {
+    settings = await loadSettings();
+    const staff = await currentStaff(['waiter', 'admin']);
+    if (staff) start(staff);
+    else renderLogin($('#app'), { title: settings.cafeName + ' · Waiter', roles: ['waiter', 'admin'], onSuccess: start });
+  } catch (e) { $('#app').innerHTML = `<div class="empty">Couldn't connect: ${esc(friendly(e))}</div>`; }
+})();
+
+function lostAccess() {
+  $('#app').innerHTML = `<div class="login-wrap"><div class="card login"><div class="logo">🔒</div><h1>Logged out</h1>
+    <p class="muted">Your account was changed or disabled by the admin. Please log in again.</p>
+    <button class="btn block" onclick="logout()">Log in again</button></div></div>`;
+}
+
+// Listen to orders from the last 24 hours (re-subscribe every few hours so the window moves)
+function listenOrders() {
+  if (ordersRef) ordersRef.off();
+  firstLoad = true;
+  ordersRef = db.ref('orders').orderByChild('createdAt').startAt(Date.now() - 24 * 3600e3);
+  ordersRef.on('value', snap => {
+    const next = [];
+    snap.forEach(c => { const v = c.val(); if (validOrder(v)) next.push(normOrder({ id: c.key, ...v })); });
+    if (!firstLoad) {
+      for (const o of next) {
+        if (orders.some(x => x.id === o.id)) continue;
+        if (o.createdBy && o.createdBy === me.uid) continue; // my own entry
+        if (o.status === 'new') alertStaff(`🛎️ ${place(o.table)} ordered`, o.items.map(l => `${l.qty}× ${l.name}`).join(', '));
+      }
+    }
+    firstLoad = false;
+    orders = next; render();
+  }, lostAccess);
+}
+
+async function start(staff) {
+  me = staff;
+  $('#app').innerHTML = `
+    <div class="topbar">
+      <span class="name">☁️ Waiter</span>
+      <span class="live" id="live"><i></i><span>connecting</span></span>
+      <span class="spacer"></span>
+      <span class="small who" style="opacity:.8">👤 ${esc(me.name)}</span>
+      <button class="btn ghost sm" id="notif">🔔 Alerts</button>
+      <button class="btn ghost sm" onclick="logout()">Log out</button>
+    </div>
+    <div class="calls" id="calls"></div>
+    <div class="toolbar"><div class="tabs" id="tabs"></div><button class="btn" id="newOrder">+ New order</button></div>
+    <div class="grid" id="grid"></div>`;
+  $('#notif').onclick = async () => {
+    unlockAudio(); ding();
+    if ('Notification' in window) {
+      const p = await Notification.requestPermission();
+      toast(p === 'granted' ? '🔔 Sound and pop-up alerts are on' : '🔔 Sound is on (pop-ups blocked by browser)');
+    } else toast('🔔 Sound alerts are on');
+  };
+  $('#newOrder').onclick = newOrderForm;
+  render();
+
+  db.ref('.info/connected').on('value', s => setLive(s.val() === true));
+  listenOrders();
+  setInterval(listenOrders, 4 * 3600e3);
+
+  let firstCalls = true;
+  db.ref('calls').on('value', snap => {
+    const next = listOf(snap.val()).map(c => ({ table: c.id, at: Number(c.at) || Date.now() }))
+      .filter(c => Date.now() - c.at < 3600e3).sort((a, b) => a.at - b.at);
+    if (!firstCalls) for (const c of next) {
+      const old = calls.find(x => x.table === c.table);
+      if (!old || old.at !== c.at) alertStaff(`🙋 ${place(c.table)} is calling a waiter`, '');
+    }
+    firstCalls = false;
+    calls = next; renderCalls(); render();
+  }, () => {});
+  setInterval(render, 30000);
+}
+function setLive(on) { const l = $('#live'); if (!l) return; l.classList.toggle('on', on); $('span', l).textContent = on ? 'live' : 'reconnecting…'; }
+
+function alertStaff(title, body) {
+  ding(); toast(title + (body ? ': ' + body : ''), 'alert', 6000);
+  if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+  if ('Notification' in window && Notification.permission === 'granted' && document.hidden) {
+    try { new Notification(title, { body, tag: title }); } catch {}
+  }
+}
+
+function render() {
+  if (!$('#tabs')) return;
+  const by = s => orders.filter(o => o.status === s);
+  const tabs = [['new', 'New'], ['processing', 'Processing'], ['delivered', 'Delivered (24h)']];
+  $('#tabs').innerHTML = tabs.map(([k, l]) => {
+    const n = by(k).length;
+    return `<button data-t="${k}" class="${tab === k ? 'on' : ''}">${l}${n && k !== 'delivered' ? `<span class="count">${n}</span>` : ''}</button>`;
+  }).join('');
+  $('#tabs').onclick = e => { const b = e.target.closest('button'); if (b) { tab = b.dataset.t; render(); } };
+
+  const list = by(tab).sort((a, b) => tab === 'delivered' ? b.updatedAt - a.updatedAt : a.createdAt - b.createdAt);
+  $('#grid').innerHTML = list.length ? list.map(o => `
+    <div class="card order ${esc(o.status)}" data-id="${esc(o.id)}">
+      <div class="head"><span class="tbl">${esc(place(o.table))}</span><span class="pill ${esc(o.status)}">${esc(o.status)}</span></div>
+      <div class="small muted">Order ${esc(o.code)} · ${timeAgo(o.createdAt)}${o.handledBy && o.status !== 'new' ? ' · ' + esc(o.handledBy) : ''}</div>
+      ${o.source === 'staff' ? `<div><span class="src">✍️ Offline order · added by ${esc(o.createdByName)}</span></div>` : ''}
+      <ul>${o.items.map(l => `<li><span><b>${l.qty}×</b>${esc(l.name)}</span><span class="muted">${money(l.price * l.qty)}</span></li>`).join('')}</ul>
+      ${o.note ? `<div class="note">📝 ${esc(o.note)}</div>` : ''}
+      <div style="display:flex;justify-content:space-between;font-weight:700"><span>Total</span><span>${money(o.total)}</span></div>
+      <div class="acts">
+        ${o.status === 'new' ? `<button class="btn amber" data-s="processing">👨‍🍳 Mark processing</button><button class="btn danger sm" data-s="cancelled" style="flex:none">Cancel</button>` : ''}
+        ${o.status === 'processing' ? `<button class="btn green" data-s="delivered">✅ Mark delivered</button><button class="btn ghost sm" data-s="new" style="flex:none">Undo</button>` : ''}
+        ${o.status === 'delivered' ? `<button class="btn ghost sm" data-s="processing">Undo</button>` : ''}
+      </div>
+    </div>`).join('') : `<div class="empty">${tab === 'new' ? '☕ No new orders. New orders will pop up here with a sound.' : 'Nothing here.'}</div>`;
+  $('#grid').onclick = async e => {
+    const b = e.target.closest('button[data-s]'); if (!b) return;
+    if (b.dataset.s === 'cancelled' && !confirm('Cancel this order?')) return;
+    b.disabled = true;
+    try {
+      await db.ref('orders/' + b.closest('[data-id]').dataset.id).update({ status: b.dataset.s, handledBy: me.name, updatedAt: TS() });
+    } catch (err) { toast(friendly(err), 'alert'); b.disabled = false; }
+  };
+  const n = by('new').length + calls.length;
+  document.title = (n ? `(${n}) ` : '') + 'Waiter Panel';
+}
+
+function renderCalls() {
+  if (!$('#calls')) return;
+  $('#calls').innerHTML = calls.map(c => `
+    <div class="callbox"><span>🙋 ${esc(place(c.table))} is calling a waiter · ${timeAgo(c.at)}</span>
+    <button class="btn sm" data-t="${esc(c.table)}" style="background:var(--blue)">On my way</button></div>`).join('');
+  $('#calls').onclick = async e => {
+    const b = e.target.closest('button'); if (!b) return;
+    try { await db.ref('calls/' + b.dataset.t).remove(); } catch (err) { toast(friendly(err), 'alert'); }
+  };
+}
+
+// ---------- Record an offline order ----------
+async function newOrderForm() {
+  let items, tables;
+  try {
+    const [m, t] = await Promise.all([db.ref('menu').once('value'), db.ref('tables').once('value')]);
+    items = listOf(m.val()).map(i => ({ ...i, price: Number(i.price) || 0 }));
+    tables = listOf(t.val()).sort((a, b) => (a.sort || 0) - (b.sort || 0)).map(x => x.id);
+  } catch (e) { return toast(friendly(e), 'alert'); }
+  items.sort((a, b) => (b.available - a.available) || String(a.category).localeCompare(b.category) || String(a.name).localeCompare(b.name));
+  const sel = {};
+  openModal(`
+    <h2>New offline order</h2>
+    <form autocomplete="off">
+      <div class="field"><label>Table</label>
+        <select name="table" required>
+          <option value="">Choose table…</option>
+          ${tables.map(t => `<option value="${esc(t)}">${esc(place(t))}</option>`).join('')}
+          <optgroup label="Other"><option value="Takeaway">Takeaway</option><option value="Counter">Counter</option></optgroup>
+        </select></div>
+      <label>Food items</label>
+      <div class="search"><input type="search" name="q" placeholder="Search food… e.g. momo, coffee"></div>
+      <div class="picklist" id="pick"></div>
+      <div class="sumbox" id="sum"></div>
+      <div class="field"><label>Note (optional)</label><input type="text" name="note" maxlength="300" placeholder="e.g. less spicy"></div>
+      <div class="field"><label>Status</label>
+        <select name="status">
+          <option value="new">New: send to the order list</option>
+          <option value="processing">Processing: already being made</option>
+          <option value="delivered">Delivered: already served (just record it)</option>
+        </select></div>
+      <div class="error"></div>
+      <div class="actions"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn" type="submit">Save order</button></div>
+    </form>`, (m, close) => {
+    const f = $('form', m);
+    $('[data-close]', m).onclick = close;
+    const drawList = () => {
+      const qv = f.q.value.trim();
+      const list = items.filter(i => !qv || matches(qv, i.name, i.category, i.description));
+      $('#pick', m).innerHTML = list.length ? list.map(i => `
+        <div class="pick ${i.available ? '' : 'off'}" data-id="${esc(i.id)}">
+          <div class="nm"><b>${esc(i.name)}</b><div class="small muted">${esc(i.category)} · ${money(i.price)}${i.available ? '' : ' · sold out'}</div></div>
+          <div class="qty">${sel[i.id] ? `<button type="button" data-d="-">−</button><span class="n">${sel[i.id]}</span>` : ''}<button type="button" data-d="+">+</button></div>
+        </div>`).join('') : `<div class="muted" style="padding:16px;text-align:center">No food found for "${esc(qv)}"</div>`;
+    };
+    const drawSum = () => {
+      const lines = Object.entries(sel).map(([id, n]) => ({ it: items.find(i => i.id === id), n }));
+      const total = lines.reduce((s, l) => s + l.it.price * l.n, 0);
+      $('#sum', m).innerHTML = lines.length
+        ? `${lines.map(l => `${l.n}× ${esc(l.it.name)}`).join(', ')}<div style="margin-top:4px"><b>Total: ${money(total)}</b></div>`
+        : `<span class="muted">No items added yet. Tap + to add.</span>`;
+    };
+    $('#pick', m).onclick = e => {
+      const b = e.target.closest('button[data-d]'); if (!b) return;
+      const id = b.closest('[data-id]').dataset.id;
+      sel[id] = Math.min(99, (sel[id] || 0) + (b.dataset.d === '-' ? -1 : 1));
+      if (sel[id] <= 0) delete sel[id];
+      drawList(); drawSum();
+    };
+    f.q.oninput = drawList;
+    f.q.onkeydown = e => { if (e.key === 'Enter') e.preventDefault(); };
+    drawList(); drawSum();
+    f.onsubmit = async e => {
+      e.preventDefault();
+      const err = $('.error', f);
+      if (!f.table.value) return err.textContent = 'Please choose a table';
+      if (!Object.keys(sel).length) return err.textContent = 'Please add at least one item';
+      const btn = $('button[type=submit]', f); btn.disabled = true;
+      const status = f.status.value;
+      try {
+        const ref = db.ref('orders').push();
+        await ref.set({
+          table: f.table.value,
+          items: Object.entries(sel).map(([id, qty]) => { const it = items.find(i => i.id === id); return { id, name: it.name, price: it.price, qty }; }),
+          note: f.note.value.slice(0, 300), status, source: 'staff',
+          createdAt: TS(), updatedAt: TS(), createdBy: me.uid, createdByName: me.name,
+          handledBy: status === 'new' ? '' : me.name,
+        });
+        tab = status; close(); render();
+        toast(`✅ Order ${orderCode(ref.key)} saved for ${place(f.table.value)}`);
+      } catch (e2) { err.textContent = friendly(e2); btn.disabled = false; }
+    };
+    f.table.focus();
+  });
+}
+</script>
+</body>
+</html>
