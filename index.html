@@ -34,6 +34,7 @@
   .order.online .tbl{color:var(--brand)}
   .order .cust{font-size:14px;line-height:1.5}
   .order .cust a{color:var(--blue);font-weight:600;text-decoration:none;white-space:nowrap}
+  .order .collect{background:var(--amber-soft);border-radius:8px;padding:7px 10px;font-weight:700;font-size:14px}
   .btn.alerton{background:var(--brand);color:#fff}
   .src{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:99px;background:var(--blue-soft);color:var(--blue)}
   .order .acts{display:flex;gap:8px}
@@ -247,7 +248,11 @@ function onlineCard(o) {
         ${!pick ? `<li><span class="muted">Delivery</span><span class="muted">${o.deliveryFee ? money(o.deliveryFee) : 'Free'}</span></li>` : ''}</ul>
       ${o.note ? `<div class="note">${ic('note', 15)} ${esc(o.note)}</div>` : ''}
       <div style="display:flex;justify-content:space-between;font-weight:700"><span>Total</span><span>${money(o.total)}</span></div>
-      <div class="small">${pay.method === 'online' ? `${ic('phone', 13)} Paid online${pay.ref ? ' · ' + esc(pay.ref) : ''}${pay.verified ? ' · <b>received</b>' : ''}` : `${ic('cash', 13)} ${pick ? 'Pay at pickup' : 'Cash on delivery'}`}</div>
+      ${(() => { const pi = payInfo(o); return pi.kind === 'online'
+        ? `<div class="small">${ic('phone', 13)} Paid online${pi.ref ? ' · ' + esc(pi.ref) : ''}${pi.verified ? ' · <b>received</b>' : ''}</div>`
+        : pi.kind === 'advance'
+          ? `<div class="small">${ic('phone', 13)} Advance ${money(pi.now)} paid online${pi.ref ? ' · ' + esc(pi.ref) : ''}${pi.verified ? ' · <b>received</b>' : ''}</div><div class="collect">${ic('cash', 14)} Collect ${money(pi.rest)} ${esc(pi.restWord)}</div>`
+          : `<div class="small">${ic('cash', 13)} ${pick ? 'Pay at pickup' : 'Cash on delivery'}</div>`; })()}
       <div class="acts">
         ${o.status === 'new' ? `<button class="btn amber" data-s="processing">${ic('flame', 16)}Accept</button><button class="btn danger sm" data-s="cancelled" style="flex:none">Cancel</button>` : ''}
         ${o.status === 'processing' ? `<button class="btn" data-s="ready">${pick ? ic('check', 16) + 'Ready for pickup' : ic('truck', 16) + 'Out for delivery'}</button><button class="btn ghost sm" data-s="new" style="flex:none">Undo</button>` : ''}
@@ -361,7 +366,7 @@ async function newOrderForm() {
   if (typeof window.CK_FIREBASE === 'undefined') miss.push('config.js');
   if (typeof firebase === 'undefined') miss.push('firebase-app-compat.js');
   if (typeof CONFIGURED === 'undefined') miss.push('common.js');
-  if (typeof CONFIGURED !== 'undefined' && window.CK_VERSION !== '20261031074048') miss.push('common.js (this one is from an older version, upload the new common.js)');
+  if (typeof CONFIGURED !== 'undefined' && window.CK_VERSION !== '20261031091652') miss.push('common.js (this one is from an older version, upload the new common.js)');
   miss = miss.filter(function (v, i, a) { return a.indexOf(v) === i; });
   if (!miss.length) return;
   var s = document.getElementById('splash');
