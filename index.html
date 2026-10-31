@@ -191,9 +191,7 @@ function setLive(on) { const l = $('#live'); if (!l) return; l.classList.toggle(
 function alertStaff(title, body, tag) {
   ding(); toast(title + (body ? ': ' + body : ''), 'alert', 6000);
   if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
-  // pop-up when the app is in the background, or when the sound can't play yet
-  const soundOk = typeof audioCtx !== 'undefined' && audioCtx && audioCtx.state === 'running';
-  if (document.hidden || !soundOk) notify(title, body, tag || title);
+  notify(title, body, tag || title); // always: phone pop-up even when the panel is open on screen
 }
 
 function render() {
@@ -363,7 +361,7 @@ async function newOrderForm() {
   if (typeof window.CK_FIREBASE === 'undefined') miss.push('config.js');
   if (typeof firebase === 'undefined') miss.push('firebase-app-compat.js');
   if (typeof CONFIGURED === 'undefined') miss.push('common.js');
-  if (typeof CONFIGURED !== 'undefined' && window.CK_VERSION !== '20261031071527') miss.push('common.js (this one is from an older version, upload the new common.js)');
+  if (typeof CONFIGURED !== 'undefined' && window.CK_VERSION !== '20261031074048') miss.push('common.js (this one is from an older version, upload the new common.js)');
   miss = miss.filter(function (v, i, a) { return a.indexOf(v) === i; });
   if (!miss.length) return;
   var s = document.getElementById('splash');
